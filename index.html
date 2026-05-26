@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>초고속 스캐너</title>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #111; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; overflow: hidden; }
+        #reader { width: 100%; max-width: 500px; border-radius: 10px; overflow: hidden; }
+        .info-text { padding: 20px; font-size: 18px; font-weight: bold; color: #f97316; }
+    </style>
+</head>
+<body>
+    <div class="info-text">바코드/QR을 사각형 안에 맞춰주세요</div>
+    <div id="reader"></div>
+
+    <script>
+        // 1. 기존 메인 앱에서 넘어온 주소(returnUrl)와 모드(mode) 확인
+        const urlParams = new URLSearchParams(window.location.search);
+        const returnUrl = urlParams.get('returnUrl');
+        const mode = urlParams.get('mode');
+
+        if (!returnUrl) {
+            document.querySelector('.info-text').innerHTML = "<span style='color:red;'>잘못된 접근입니다. 메인 앱에서 실행해주세요.</span>";
+        } else {
+            // 2. 카메라 스캐너 켜기
+            const html5QrCode = new Html5Qrcode("reader");
+            const config = { fps: 15, qrbox: { width: 250, height: 250 } };
+
+            html5QrCode.start(
+                { facingMode: "environment" }, // 무조건 후면 카메라 강제
+                config,
+                (decodedText) => {
+                    // 3. 바코드를 읽으면 렌즈를 끄고 메인 앱으로 결과값을 들고 돌아감!
+                    html5QrCode.stop().then(() => {
+                        window.location.href = returnUrl + "?scannedValue=" + encodeURIComponent(decodedText) + "&mode=" + encodeURIComponent(mode);
+                    });
+                },
+                (errorMessage) => { /* 스캔 중 에러는 무시 (계속 탐색) */ }
+            ).catch((err) => {
+                document.querySelector('.info-text').innerHTML = "<span style='color:red;'>카메라 권한이 차단되었습니다. 설정에서 허용해주세요.</span>";
+            });
+        }
+    </script>
+</body>
+</html>
