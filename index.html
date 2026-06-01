@@ -138,27 +138,35 @@ async function startScanner(){
 
                 // 중복 스캔 방지
                 if(scanned) return;
-
                 scanned = true;
 
+                try{ navigator.vibrate?.(200); }catch(e){}
+
+                document.querySelector('.info-text').innerHTML = "✓ 스캔 완료!";
+
+                // 카메라 즉시 중지
+                try{ await html5QrCode.stop(); }catch(e){}
+
                 try{
-
-                    navigator.vibrate?.(200);
-
-                }catch(e){}
-
-                document.querySelector('.info-text')
-                .innerHTML =
-                    "스캔 완료!";
-
-                await html5QrCode.stop();
-
-                window.location.href =
-                    finalReturnUrl +
-                    "?scannedValue=" +
-                    encodeURIComponent(decodedText) +
-                    "&mode=" +
-                    encodeURIComponent(mode || '');
+                    if(window.opener && !window.opener.closed){
+                        // [경로1] 새 탭으로 열린 경우 — postMessage (페이지 이동 없음)
+                        window.opener.postMessage({
+                            _barcodeResult: true,
+                            scannedValue: decodedText,
+                            scannedMode: mode || 'barcode'
+                        }, '*');
+                        document.querySelector('.info-text').innerHTML = "✓ 결과 전달 완료<br>창을 닫습니다";
+                        setTimeout(()=>{ window.close(); }, 800);
+                    } else {
+                        // [경로2] 같은 탭 — URL 이동 (흰 화면 불가피)
+                        const sep = finalReturnUrl.includes('?') ? '&' : '?';
+                        window.location.href = finalReturnUrl + sep
+                            + "scannedValue=" + encodeURIComponent(decodedText)
+                            + "&scannedMode=" + encodeURIComponent(mode || 'barcode');
+                    }
+                }catch(err){
+                    alert('결과 전달 중 오류: ' + err.message);
+                }
 
             },
 
