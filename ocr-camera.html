@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0F172A">
+  <title>번호판 OCR 촬영</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; height: 100dvh; overflow: hidden; overscroll-behavior: none; touch-action: manipulation; }
+    body { background: #0F172A; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; }
+
+    /* ── 상단 상태바 ── */
+    #status-bar {
+      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 12px 20px; min-height: 48px;
+      background: #0F172A; font-size: 13px; font-weight: 600;
+    }
+    #s-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748B; flex-shrink: 0; transition: background .3s; }
+    #s-dot.ready    { background: #F59E0B; animation: pulse 1.8s ease-in-out infinite; }
+    #s-dot.capture  { background: #3B82F6; animation: pulse .5s ease-in-out infinite; }
+    #s-dot.done     { background: #22C55E; }
+    #s-dot.error    { background: #EF4444; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    #s-txt { color: #CBD5E1; }
+
+    /* ── 카메라 뷰 ── */
+    #cam-wrap { flex: 1; position: relative; overflow: hidden; background: #000; min-height: 0; }
+    #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+    /* ── 가이드 프레임 (번호판 비율) ── */
+    #guide-frame {
+      position: absolute;
+      border-radius: 10px; pointer-events: none;
+      border: 2px solid rgba(255,255,255,.2);
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.52);
+      transition: border-color .25s, box-shadow .25s;
+    }
+    #guide-frame.s-ready {
+      border-color: #F59E0B;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.52), 0 0 0 3px rgba(245,158,11,.2);
+    }
+    #guide-frame.s-capture {
+      border-color: #3B82F6;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.52), 0 0 14px 5px rgba(59,130,246,.4);
+      animation: pulseBorder .6s ease-in-out infinite;
+    }
+    #guide-frame.s-done {
+      border-color: #22C55E;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.3), 0 0 22px 6px rgba(34,197,94,.5);
+    }
+    #guide-frame.s-error { border-color: #EF4444; }
+    @keyframes pulseBorder {
+      0%,100% { box-shadow: 0 0 0 9999px rgba(0,0,0,.52), 0 0 8px 3px rgba(59,130,246,.3); }
+      50%      { box-shadow: 0 0 0 9999px rgba(0,0,0,.52), 0 0 18px 6px rgba(59,130,246,.6); }
+    }
+
+    /* 꺾쇠 모서리 */
+    .corner { position: absolute; width: 20px; height: 20px; border-style: solid; border-color: rgba(255,255,255,.35); transition: border-color .25s; }
+    .corner-tl { top:-2px; left:-2px;   border-width:3px 0 0 3px; border-radius:8px 0 0 0; }
+    .corner-tr { top:-2px; right:-2px;  border-width:3px 3px 0 0; border-radius:0 8px 0 0; }
+    .corner-bl { bottom:-2px; left:-2px;  border-width:0 0 3px 3px; border-radius:0 0 0 8px; }
+    .corner-br { bottom:-2px; right:-2px; border-width:0 3px 3px 0; border-radius:0 0 8px 0; }
+    #guide-frame.s-ready  .corner { border-color: #F59E0B; }
+    #guide-frame.s-capture .corner { border-color: #3B82F6; }
+    #guide-frame.s-done   .corner { border-color: #22C55E; }
+
+    #guide-label {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      font-size: 11px; font-weight: 600; color: rgba(255,255,255,.6);
+      white-space: nowrap; pointer-events: none;
+    }
+
+    /* 플래시 */
+    #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+    @keyframes flashAnim { 0%{opacity:.65} 100%{opacity:0} }
+    #flash.go { animation: flashAnim .15s ease-out forwards; }
+
+    /* 성공 배너 */
+    #success-banner {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(34,197,94,.95); border-radius: 16px; padding: 18px 36px;
+      text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 10;
+    }
+    #success-banner.show { opacity: 1; }
+
+    /* 오류 패널 */
+    #error-panel {
+      display: none; position: absolute; inset: 0; background: #0F172A;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; padding: 28px; text-align: center; z-index: 10;
+    }
+    #error-panel.show { display: flex; }
+
+    /* ── 하단 컨트롤 ── */
+    #controls {
+      flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+      gap: 0; padding: 16px 20px;
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+      background: #0F172A; position: relative;
+    }
+
+    /* 셔터 버튼 */
+    #capture-btn {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: #fff; border: 5px solid rgba(255,255,255,.25);
+      box-shadow: 0 0 0 4px rgba(255,255,255,.1);
+      cursor: pointer; transition: transform .12s, opacity .12s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #capture-btn:active:not(:disabled) { transform: scale(.88); }
+    #capture-btn:disabled { opacity: .4; cursor: not-allowed; }
+    #capture-btn svg { width: 30px; height: 30px; fill: #0F172A; }
+
+    /* 닫기 버튼 */
+    #close-btn {
+      position: absolute; right: 20px;
+      padding: 10px 14px; border-radius: 10px;
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
+      color: #94A3B8; font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: background .15s;
+    }
+    #close-btn:active { background: rgba(255,255,255,.14); }
+
+    /* 공통 버튼 */
+    .btn-primary {
+      padding: 12px 28px; border-radius: 12px; border: none;
+      background: #3B82F6; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer;
+    }
+    .btn-primary:active { background: #2563EB; }
+  </style>
+</head>
+<body>
+
+  <!-- 상태바 -->
+  <div id="status-bar">
+    <span id="s-dot"></span>
+    <span id="s-txt">카메라 초기화 중...</span>
+  </div>
+
+  <!-- 카메라 뷰 -->
+  <div id="cam-wrap">
+    <video id="video" autoplay playsinline muted webkit-playsinline></video>
+    <div id="flash"></div>
+
+    <div id="guide-frame">
+      <div class="corner corner-tl"></div>
+      <div class="corner corner-tr"></div>
+      <div class="corner corner-bl"></div>
+      <div class="corner corner-br"></div>
+    </div>
+    <p id="guide-label">번호판을 프레임 안에 맞춰주세요</p>
+
+    <!-- 성공 배너 -->
+    <div id="success-banner">
+      <p style="color:#fff;font-weight:900;font-size:17px;margin-bottom:4px">✓ 촬영 완료</p>
+      <p style="color:rgba(255,255,255,.8);font-size:13px">앱으로 전송 중...</p>
+    </div>
+
+    <!-- 오류 패널 -->
+    <div id="error-panel">
+      <div style="font-size:52px">📷</div>
+      <p id="error-msg" style="color:#E2E8F0;font-size:14px;line-height:1.8;max-width:280px"></p>
+      <button class="btn-primary" onclick="initCamera()">다시 시도</button>
+    </div>
+  </div>
+
+  <!-- 하단 컨트롤 -->
+  <div id="controls">
+    <button id="capture-btn" onclick="capture()" title="촬영">
+      <!-- 카메라 셔터 아이콘 -->
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="13" r="4"/>
+        <path d="M20 7h-2.5l-1.5-2H8L6.5 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/>
+      </svg>
+    </button>
+    <button id="close-btn" onclick="doClose()">✕ 닫기</button>
+  </div>
+
+  <canvas id="canvas" style="display:none"></canvas>
+
+<script>
+'use strict';
+
+let gStream = null;
+let gCaptured = false;
+
+/* ── 가이드 프레임 위치 (번호판 4.5:1 비율) ── */
+function positionGuide() {
+  const wrap = document.getElementById('cam-wrap');
+  const gf   = document.getElementById('guide-frame');
+  const lbl  = document.getElementById('guide-label');
+  const vw = wrap.clientWidth, vh = wrap.clientHeight;
+  const fw = Math.round(vw * 0.88);
+  const fh = Math.min(Math.round(fw / 4.2), Math.round(vh * 0.22));
+  const lft = Math.round((vw - fw) / 2);
+  const top = Math.round((vh - fh) / 2);
+  Object.assign(gf.style, { left: lft+'px', top: top+'px', width: fw+'px', height: fh+'px' });
+  lbl.style.cssText = `top:${top + fh + 12}px; left:50%; transform:translateX(-50%)`;
+}
+
+/* ── 카메라 초기화 ── */
+async function initCamera() {
+  setStatus('카메라 연결 중...', '');
+  setFrame('');
+  document.getElementById('error-panel').classList.remove('show');
+  document.getElementById('success-banner').classList.remove('show');
+  document.getElementById('capture-btn').disabled = false;
+  gCaptured = false;
+  stopCamera();
+
+  const strategies = [
+    { video: { facingMode: { exact: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
+    { video: { facingMode: 'environment' } },
+    { video: true }
+  ];
+
+  let stream = null, lastErr = null;
+  for (const s of strategies) {
+    try { stream = await navigator.mediaDevices.getUserMedia(s); break; }
+    catch(e) {
+      lastErr = e;
+      if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') break;
+    }
+  }
+
+  if (!stream) { showError(lastErr); return; }
+
+  gStream = stream;
+  const video = document.getElementById('video');
+  video.srcObject = stream;
+  video.muted = true; video.playsInline = true;
+  await new Promise(r => {
+    if (video.readyState >= 2) { r(); return; }
+    video.onloadedmetadata = r;
+    setTimeout(r, 4000);
+  });
+  try { await video.play(); } catch(e) {}
+
+  positionGuide();
+  setStatus('번호판을 프레임 안에 맞춰주세요 — 촬영 버튼을 누르세요', 'ready');
+  setFrame('s-ready');
+}
+
+/* ── 카메라 중지 ── */
+function stopCamera() {
+  if (gStream) { gStream.getTracks().forEach(t => t.stop()); gStream = null; }
+  const v = document.getElementById('video');
+  if (v) v.srcObject = null;
+}
+
+/* ── 촬영 ── */
+function capture() {
+  if (gCaptured) return;
+  gCaptured = true;
+
+  const video = document.getElementById('video');
+  if (!video || !video.videoWidth) {
+    gCaptured = false;
+    setStatus('카메라가 아직 준비되지 않았습니다.', 'error');
+    return;
+  }
+
+  // 플래시 + 진동
+  const flash = document.getElementById('flash');
+  flash.classList.remove('go');
+  requestAnimationFrame(() => flash.classList.add('go'));
+  try { navigator.vibrate?.(60); } catch(e) {}
+
+  // 고해상도 캡처 (최대 1600px)
+  const canvas = document.getElementById('canvas');
+  const ratio  = Math.min(1, 1600 / video.videoWidth);
+  canvas.width  = Math.round(video.videoWidth  * ratio);
+  canvas.height = Math.round(video.videoHeight * ratio);
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  stopCamera();
+  document.getElementById('capture-btn').disabled = true;
+  setFrame('s-capture');
+  setStatus('이미지 전송 중...', 'capture');
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const base64  = dataUrl.split(',')[1];
+
+  document.getElementById('success-banner').classList.add('show');
+
+  setTimeout(() => {
+    try {
+      if (window.opener && !window.opener.closed) {
+        // 새 탭 → postMessage로 즉시 전달
+        window.opener.postMessage({ _ocrCapture: true, base64, dataUrl }, '*');
+        setStatus('✓ 전송 완료 — 창을 닫습니다', 'done');
+        setFrame('s-done');
+        setTimeout(() => window.close(), 700);
+      } else {
+        // 같은 탭 폴백 — localStorage 경유
+        try { localStorage.setItem('_ocr_pending_b64', base64); } catch(e) {}
+        setStatus('✓ 촬영 완료', 'done');
+        setFrame('s-done');
+        setTimeout(() => window.history.back(), 600);
+      }
+    } catch(e) {
+      console.error('[OCR Cam]', e);
+      setStatus('전송 오류: ' + e.message, 'error');
+      setFrame('s-error');
+      document.getElementById('capture-btn').disabled = false;
+      gCaptured = false;
+    }
+  }, 500);
+}
+
+function doClose() { stopCamera(); window.close(); }
+
+/* ── 오류 표시 ── */
+function showError(err) {
+  stopCamera();
+  let msg = '카메라를 사용할 수 없습니다.';
+  if (err) {
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      msg = '카메라 접근 권한이 거부되었습니다.\n\n브라우저 설정에서 카메라 권한을 허용해 주세요.';
+    } else {
+      msg = err.message || msg;
+    }
+  }
+  document.getElementById('error-msg').textContent = msg;
+  document.getElementById('error-panel').classList.add('show');
+  setStatus('카메라 오류', 'error');
+  setFrame('s-error');
+}
+
+function setStatus(msg, phase) {
+  document.getElementById('s-txt').textContent = msg;
+  document.getElementById('s-dot').className = phase || '';
+}
+function setFrame(cls) { document.getElementById('guide-frame').className = cls; }
+
+window.addEventListener('load', initCamera);
+window.addEventListener('resize', positionGuide);
+</script>
+</body>
+</html>
