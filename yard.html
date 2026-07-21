@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0B1120">
+<title>적치장 입출고 스캐너</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════════════════════
+   적치장 입출고 QR 스캐너 (GitHub Pages · top-level)
+   GAS iframe 에서는 카메라(getUserMedia)가 차단되므로 이 페이지를
+   window.open 으로 띄우고 결과를 postMessage 로 돌려준다.
+   ?mode=in  → 구역 QR 1회 + 자재 QR 연속
+   ?mode=out → 자재 QR 1회
+   ?zones=A-1,B-2 → 구역 코드 화이트리스트(즉시 검증용, 선택)
+   ═══════════════════════════════════════════════════════════ */
+:root {
+  --ok: #22C55E; --crit: #EF4444; --warn: #F59E0B; --primary: #3B82F6;
+  --surface: #1E2538; --surface-2: #172033; --line: rgba(148,163,184,.18);
+  --text: #F1F5F9; --text-2: #CBD5E1; --text-3: #64748B;
+  --r-md: 14px; --r-sm: 10px;
+  --font: -apple-system, BlinkMacSystemFont, 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', Roboto, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+body { font-family: var(--font); background: #000; color: var(--text); display: flex; flex-direction: column; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+ul { list-style: none; }
+
+#cam { position: absolute; inset: 0; overflow: hidden; }
+#reader { width: 100%; height: 100%; }
+#reader video { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+#reader img, #reader__dashboard, #reader__status_span, #qr-shaded-region { display: none !important; }
+
+.head {
+  position: relative; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: max(14px, env(safe-area-inset-top)) 18px 12px;
+  background: linear-gradient(180deg, rgba(0,0,0,.75), rgba(0,0,0,0));
+}
+.head .t { font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
+.head .t small { display: block; font-size: 12.5px; font-weight: 600; color: rgba(255,255,255,.72); margin-top: 3px; }
+.head .x { width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.14); font-size: 24px; line-height: 1; display: grid; place-items: center; flex: none; }
+
+.guide { position: absolute; left: 50%; top: 40%; transform: translate(-50%,-50%); z-index: 3; width: min(66vw, 260px); aspect-ratio: 1/1; border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.5); pointer-events: none; }
+.guide .c { position: absolute; width: 30px; height: 30px; border: 4px solid var(--ok); transition: border-color .2s; }
+.c-tl { top:-2px; left:-2px; border-right:0; border-bottom:0; border-radius:14px 0 0 0; }
+.c-tr { top:-2px; right:-2px; border-left:0; border-bottom:0; border-radius:0 14px 0 0; }
+.c-bl { bottom:-2px; left:-2px; border-right:0; border-top:0; border-radius:0 0 0 14px; }
+.c-br { bottom:-2px; right:-2px; border-left:0; border-top:0; border-radius:0 0 14px 0; }
+body.m-out .guide .c { border-color: var(--crit); }
+.laser { position: absolute; left: 8%; right: 8%; height: 2px; background: var(--ok); box-shadow: 0 0 12px 2px var(--ok); border-radius: 2px; animation: laser 2s ease-in-out infinite; }
+body.m-out .laser { background: var(--crit); box-shadow: 0 0 12px 2px var(--crit); }
+@keyframes laser { 0%,100% { top: 12%; } 50% { top: 88%; } }
+@media (prefers-reduced-motion: reduce) { .laser { animation: none; top: 50%; } }
+.flash { position: absolute; inset: 0; z-index: 5; background: #fff; opacity: 0; pointer-events: none; }
+.flash.on { animation: fl .28s ease; }
+.flash.bad { background: #EF4444; }
+@keyframes fl { 0% { opacity: .5; } 100% { opacity: 0; } }
+.tip { position: absolute; left: 50%; top: calc(40% + min(33vw,130px) + 20px); transform: translateX(-50%); z-index: 4; font-size: 14.5px; font-weight: 700; text-align: center; text-shadow: 0 1px 6px rgba(0,0,0,.75); white-space: nowrap; }
+.tip b { color: #7CF2A8; }
+body.m-out .tip b { color: #FCA5A5; }
+
+.panel {
+  position: relative; z-index: 4; margin-top: auto; background: var(--surface); border-radius: 22px 22px 0 0;
+  box-shadow: 0 -10px 40px rgba(0,0,0,.6); padding: 16px 18px calc(16px + env(safe-area-inset-bottom));
+  max-height: 54vh; display: flex; flex-direction: column; gap: 12px;
+}
+.panel .ph { display: flex; align-items: center; justify-content: space-between; }
+.panel .ph .z { font-size: 15px; font-weight: 800; }
+.panel .ph .z small { color: var(--text-3); font-weight: 700; }
+.panel .ph .cnt { font-size: 12px; font-weight: 800; color: var(--ok); background: rgba(34,197,94,.16); padding: 4px 10px; border-radius: 999px; }
+.list { overflow-y: auto; display: flex; flex-direction: column; gap: 7px; min-height: 0; }
+.list li { display: flex; align-items: center; gap: 10px; padding: 11px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); font-weight: 700; font-size: 14px; animation: fade .2s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.list li .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list li .rm { flex: none; width: 30px; height: 30px; border-radius: 8px; background: rgba(148,163,184,.14); color: var(--text-3); font-size: 18px; display: grid; place-items: center; }
+.empty { text-align: center; color: var(--text-3); padding: 22px; font-size: 13.5px; font-weight: 600; }
+.foot { display: flex; gap: 10px; }
+.foot .go { flex: 2; padding: 16px; border-radius: var(--r-md); background: var(--ok); color: #06240f; font-size: 16px; font-weight: 800; }
+.foot .go[disabled] { opacity: .45; }
+.foot .gh { flex: 1; padding: 16px; border-radius: var(--r-md); background: var(--surface-2); color: var(--text-2); font-size: 15px; font-weight: 800; border: 1px solid var(--line); }
+.perm { padding: 22px 18px; text-align: center; }
+.perm .ic { font-size: 40px; margin-bottom: 10px; }
+.perm h3 { font-size: 17px; font-weight: 800; margin-bottom: 8px; }
+.perm p { font-size: 13.5px; color: var(--text-2); line-height: 1.65; margin-bottom: 16px; }
+.perm .err { color: #FCA5A5; }
+</style>
+</head>
+<body>
+
+<div id="cam"><div id="reader"></div></div>
+
+<div class="guide" aria-hidden="true">
+  <span class="c c-tl"></span><span class="c c-tr"></span><span class="c c-bl"></span><span class="c c-br"></span>
+  <div class="laser"></div>
+</div>
+<div class="flash" id="flash" aria-hidden="true"></div>
+
+<div class="head">
+  <div class="t" id="title">입고 스캔<small id="sub">구역 QR을 먼저 스캔하세요</small></div>
+  <button class="x" id="btn-x" type="button" aria-label="닫기">×</button>
+</div>
+<div class="tip" id="tip">QR을 <b>가운데 사각형</b>에 맞춰 주세요</div>
+
+<div class="panel" id="panel" style="display:none"></div>
+
+<script>
+(function () {
+  'use strict';
+  var qs = new URLSearchParams(location.search);
+  //  in  = 구역 1회 + 자재 연속 / out = 불출 자재 1회 / one = 값 1개만 집어오기(중립)
+  var M = qs.get('mode');
+  var MODE = (M === 'out' || M === 'one') ? M : 'in';
+  var TAG = qs.get('tag') || '';                     // 호출측 라우팅용 — 그대로 돌려줌
+  var RETURN_URL = qs.get('returnUrl') || '';
+  var ZONES = (qs.get('zones') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+
+  var step = (MODE === 'in') ? 'zone' : 'single';
+  var zone = '', pallets = [], lastCode = '', lastTime = 0, paused = false, qr = null, ac = null;
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function beep(ok) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      if (ac.state === 'suspended') ac.resume();
+      var o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'sine'; o.frequency.value = ok ? 880 : 320;
+      g.gain.setValueAtTime(0.0001, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.3, ac.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.15);
+      o.connect(g); g.connect(ac.destination);
+      o.start(); o.stop(ac.currentTime + 0.16);
+    } catch (e) {}
+    try { if (navigator.vibrate) navigator.vibrate(ok ? 120 : [50,40,50]); } catch (e) {}
+  }
+  function flash(bad) {
+    var f = $('flash'); if (!f) return;
+    f.classList.remove('on'); f.classList.toggle('bad', !!bad);
+    void f.offsetWidth; f.classList.add('on');
+  }
+  function setTitle(t) { var e = $('title'); if (e && e.firstChild) e.firstChild.nodeValue = t; }
+  function setSub(t) { var e = $('sub'); if (e) e.textContent = t; }
+
+  // ── 결과 전달 ─────────────────────────────────────────
+  function deliver() {
+    var payload = { _yardScan: true, mode: MODE, tag: TAG, zone: zone, pallets: pallets.slice() };
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(payload, '*');
+        setSub('결과 전달 완료 · 창을 닫습니다');
+        setTimeout(function () { try { window.close(); } catch (e) {} }, 500);
+        return;
+      }
+    } catch (e) {}
+    // 폴백: opener 가 없으면 returnUrl 로 값 전달 (같은 탭 복귀)
+    if (RETURN_URL) {
+      var sep = RETURN_URL.indexOf('?') >= 0 ? '&' : '?';
+      location.href = RETURN_URL + sep + 'yardScan=' + encodeURIComponent(JSON.stringify(payload));
+      return;
+    }
+    setSub('결과를 전달할 창을 찾지 못했습니다');
+  }
+
+  // ── 패널 렌더 ─────────────────────────────────────────
+  function render() {
+    var p = $('panel'); if (!p) return;
+    if (MODE !== 'in' || step === 'zone') { p.style.display = 'none'; p.innerHTML = ''; return; }
+    p.style.display = 'flex';
+    p.innerHTML =
+      '<div class="ph"><div class="z">📦 ' + esc(zone) + ' <small>구역</small></div>'
+        + '<div class="cnt">' + pallets.length + '개 스캔됨</div></div>'
+      + '<ul class="list">'
+        + (pallets.length ? pallets.map(function (x, i) {
+            return '<li><span class="p">' + esc(x) + '</span><button class="rm" data-i="' + i + '" type="button" aria-label="삭제">×</button></li>';
+          }).join('') : '<li class="empty">자재 QR을 계속 스캔하세요</li>')
+      + '</ul>'
+      + '<div class="foot"><button class="gh" id="b-cancel" type="button">취소</button>'
+        + '<button class="go" id="b-done" type="button"' + (pallets.length ? '' : ' disabled') + '>완료'
+        + (pallets.length ? (' (' + pallets.length + ')') : '') + '</button></div>';
+    Array.prototype.forEach.call(p.querySelectorAll('.rm'), function (b) {
+      b.addEventListener('click', function () { pallets.splice(+b.getAttribute('data-i'), 1); render(); });
+    });
+    var c = $('b-cancel'); if (c) c.addEventListener('click', function () { try { window.close(); } catch (e) {} });
+    var d = $('b-done'); if (d && pallets.length) d.addEventListener('click', function () { paused = true; stop(); deliver(); });
+  }
+
+  function permError(msg) {
+    var p = $('panel'); if (!p) return;
+    p.style.display = 'flex';
+    p.innerHTML =
+      '<div class="perm"><div class="ic">📷</div><h3>카메라 권한이 필요합니다</h3>'
+      + '<p>QR 스캔을 위해 카메라 접근을 <b>허용</b>해 주세요.<br>브라우저 주소창의 카메라 아이콘 또는 사이트 설정에서 허용으로 바꾼 뒤 다시 시도하세요.'
+      + (msg ? '<br><br><span class="err">' + esc(msg) + '</span>' : '') + '</p>'
+      + '<div class="foot"><button class="gh" id="b-close2" type="button">닫기</button>'
+        + '<button class="go" id="b-retry" type="button">다시 시도</button></div></div>';
+    var c = $('b-close2'); if (c) c.addEventListener('click', function () { try { window.close(); } catch (e) {} });
+    var r = $('b-retry'); if (r) r.addEventListener('click', function () { $('panel').style.display = 'none'; start(); });
+  }
+
+  // ── 디코드 ────────────────────────────────────────────
+  function onDecode(text) {
+    if (paused) return;
+    var code = String(text || '').trim();
+    if (!code) return;
+    var now = Date.now();
+    if (code === lastCode && (now - lastTime) < 1500) return;
+    lastCode = code; lastTime = now;
+
+    if (MODE === 'out' || MODE === 'one') {
+      paused = true; flash(); beep(true);
+      pallets = [code];
+      setSub('스캔 완료 · ' + code);
+      stop(); deliver();
+      return;
+    }
+    if (step === 'zone') {
+      // zones 화이트리스트가 있으면 즉시 검증 (없으면 그대로 수용 → 앱에서 검증)
+      if (ZONES.length) {
+        var hit = ZONES.find(function (z) { return z === code || z.toLowerCase() === code.toLowerCase(); });
+        if (!hit) { flash(true); beep(false); setSub('❌ 등록되지 않은 구역: ' + code); return; }
+        code = hit;
+      }
+      zone = code; step = 'pallet';
+      flash(); beep(true);
+      setSub('구역 ' + zone + ' · 자재 QR을 연속 스캔하세요');
+      render();
+      return;
+    }
+    // pallet 연속 스캔
+    if (pallets.indexOf(code) >= 0) { flash(); setSub('이미 스캔됨 · ' + code); return; }
+    pallets.push(code);
+    flash(); beep(true);
+    setSub('구역 ' + zone + ' · ' + pallets.length + '개 스캔됨');
+    render();
+  }
+
+  // ── 카메라 ────────────────────────────────────────────
+  function start() {
+    if (typeof Html5Qrcode === 'undefined') { permError('스캐너 라이브러리를 불러오지 못했습니다.'); return; }
+    var config = {
+      fps: 10,
+      qrbox: function (vw, vh) { var m = Math.floor(Math.min(vw, vh) * 0.66); return { width: m, height: m }; },
+      aspectRatio: (window.innerHeight && window.innerWidth) ? (window.innerHeight / window.innerWidth) : 1.777
+    };
+    try { qr = new Html5Qrcode('reader', { verbose: false }); }
+    catch (e) { permError((e && e.message) || '스캐너 초기화 실패'); return; }
+
+    Html5Qrcode.getCameras().then(function (cams) {
+      if (!cams || !cams.length) throw new Error('카메라를 찾을 수 없습니다.');
+      var back = cams.find(function (c) {
+        var l = (c.label || '').toLowerCase();
+        return l.indexOf('back') >= 0 || l.indexOf('rear') >= 0 || l.indexOf('environment') >= 0 || l.indexOf('후면') >= 0;
+      });
+      return qr.start(back ? back.id : cams[cams.length - 1].id, config, onDecode, function () {});
+    }).catch(function (e) {
+      try {
+        qr.start({ facingMode: 'environment' }, config, onDecode, function () {})
+          .catch(function (e2) { permError((e2 && e2.message) || (e && e.message) || '카메라를 시작할 수 없습니다.'); });
+      } catch (e3) { permError((e && e.message) || '카메라를 시작할 수 없습니다.'); }
+    });
+  }
+  function stop() {
+    var q = qr; qr = null;
+    if (!q) return;
+    try { q.stop().then(function () { try { q.clear(); } catch (e) {} }).catch(function () {}); } catch (e) {}
+  }
+
+  // ── 부트 ──────────────────────────────────────────────
+  document.body.classList.toggle('m-out', MODE === 'out');
+  setTitle(MODE === 'in' ? '입고 스캔' : (MODE === 'one' ? 'Pallet QR 스캔' : '불출 스캔'));
+  setSub(MODE === 'in' ? '구역 QR을 먼저 스캔하세요'
+    : (MODE === 'one' ? 'Pallet QR을 스캔하세요' : '불출할 자재 QR을 스캔하세요'));
+  $('btn-x').addEventListener('click', function () { stop(); try { window.close(); } catch (e) {} });
+  start();
+})();
+</script>
+</body>
+</html>
