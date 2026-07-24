@@ -249,19 +249,32 @@ body.m-out .tip b { color: #FCA5A5; }
     try { qr = new Html5Qrcode('reader', { verbose: false }); }
     catch (e) { permError((e && e.message) || '스캐너 초기화 실패'); return; }
 
-    Html5Qrcode.getCameras().then(function (cams) {
-      if (!cams || !cams.length) throw new Error('카메라를 찾을 수 없습니다.');
-      var back = cams.find(function (c) {
-        var l = (c.label || '').toLowerCase();
-        return l.indexOf('back') >= 0 || l.indexOf('rear') >= 0 || l.indexOf('environment') >= 0 || l.indexOf('후면') >= 0;
+    //  카메라를 한 번만 연다.
+    //  getCameras() 는 라벨(전면/후면)을 읽으려고 getUserMedia 로 카메라를 열었다가
+    //  즉시 stop 하고, 그 뒤 qr.start() 가 다시 연다 → 하드웨어 초기화가 2회라 체감이 느리다.
+    //  폰은 exact:environment 만으로 후면이 잡히므로 곧장 1회만 연다.
+    //  후면이 없는 기기(태블릿·노트북 웹캠)는 OverconstrainedError 가 나므로
+    //  기존 getCameras() 열거 경로를 폴백으로 그대로 남겨 둔다.
+    try {
+      qr.start({ facingMode: { exact: 'environment' } }, config, onDecode, function () {})
+        .catch(function () { startByEnumeration(); });
+    } catch (e0) { startByEnumeration(); }
+
+    function startByEnumeration() {
+      Html5Qrcode.getCameras().then(function (cams) {
+        if (!cams || !cams.length) throw new Error('카메라를 찾을 수 없습니다.');
+        var back = cams.find(function (c) {
+          var l = (c.label || '').toLowerCase();
+          return l.indexOf('back') >= 0 || l.indexOf('rear') >= 0 || l.indexOf('environment') >= 0 || l.indexOf('후면') >= 0;
+        });
+        return qr.start(back ? back.id : cams[cams.length - 1].id, config, onDecode, function () {});
+      }).catch(function (e) {
+        try {
+          qr.start({ facingMode: 'environment' }, config, onDecode, function () {})
+            .catch(function (e2) { permError((e2 && e2.message) || (e && e.message) || '카메라를 시작할 수 없습니다.'); });
+        } catch (e3) { permError((e && e.message) || '카메라를 시작할 수 없습니다.'); }
       });
-      return qr.start(back ? back.id : cams[cams.length - 1].id, config, onDecode, function () {});
-    }).catch(function (e) {
-      try {
-        qr.start({ facingMode: 'environment' }, config, onDecode, function () {})
-          .catch(function (e2) { permError((e2 && e2.message) || (e && e.message) || '카메라를 시작할 수 없습니다.'); });
-      } catch (e3) { permError((e && e.message) || '카메라를 시작할 수 없습니다.'); }
-    });
+    }
   }
   function stop() {
     var q = qr; qr = null;
