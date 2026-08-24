@@ -226,7 +226,12 @@ body.m-out .tip b { color: #FCA5A5; }
   // ── 디코드 ────────────────────────────────────────────
   //  html5-qrcode 콜백 = (decodedText, decodedResult). QR·1D 바코드 모두 지원(포맷 제한 없음).
   function onDecode(text, result) {
-    if (TRACE) { var _fmt = ''; try { _fmt = (result && result.result && result.result.format && (result.result.format.formatName || result.result.format)) || ''; } catch (e) {} _pushTrace(_fmt, String(text || '')); }
+    // symbology(포맷) 판정 — html5-qrcode 2번째 인자. PALLET 자재 스캔은 QR_CODE 만 허용(1D 바코드 CODE_39 등은
+    //  동일 물리코드에서 서로 다른 false raw 를 대량 생성 → 잘못된 Pallet 등록의 원인). 위치 QR 도 QR_CODE 라 무영향.
+    var _fmt = '';
+    try { _fmt = (result && result.result && result.result.format && (result.result.format.formatName || result.result.format)) || ''; } catch (e) {}
+    if (TRACE) _pushTrace(_fmt, String(text || ''));
+    var _isBarcode = !!_fmt && String(_fmt).toUpperCase() !== 'QR_CODE';   // QR 외(1D) = false decode 위험 → 자재 입력 불허
     if (paused) return;
     var code = String(text || '').trim();
     if (!code) return;
@@ -235,6 +240,7 @@ body.m-out .tip b { color: #FCA5A5; }
     lastCode = code; lastTime = now;
 
     if (MODE === 'out' || MODE === 'one') {
+      if (_isBarcode) { flash(true); beep(false); setSub('자재 QR을 스캔하세요'); return; }   // 1D 바코드 오인식 차단(계속 스캔)
       paused = true; flash(); beep(true);
       pallets = [code];
       setSub('스캔 완료 · ' + code);
@@ -254,7 +260,9 @@ body.m-out .tip b { color: #FCA5A5; }
       render();
       return;
     }
-    // pallet 연속 스캔 — 적치위치 QR 오스캔은 PALLET 로 넣지 않고 안내 후 계속 스캔(세션/카메라 유지).
+    // pallet 연속 스캔 — 1D 바코드(CODE_39 등) false decode 는 PALLET 로 넣지 않고 계속 스캔(카메라/세션 유지).
+    if (_isBarcode) { flash(true); beep(false); setSub('자재 QR을 스캔하세요'); return; }
+    // 적치위치 QR 오스캔도 PALLET 로 넣지 않고 안내 후 계속 스캔.
     if (isLocationQR(code)) { flash(true); beep(false); setSub('적치위치 QR입니다 · PALLET QR을 스캔하세요'); return; }
     // 세션 내 동일 Pallet 중복등록 방지 — canonical id(정규화) 기준. 추가/count 증가 없이 계속 스캔.
     var pid = normPallet(code);
