@@ -118,6 +118,7 @@ body.m-out .tip b { color: #FCA5A5; }
 
   var step = (MODE === 'in') ? 'zone' : 'single';
   var zone = '', pallets = [], lastCode = '', lastTime = 0, paused = false, qr = null, ac = null;
+  var scannedPalletIds = {};   // 이번 입고 세션에서 이미 스캔한 canonical Pallet_ID (중복등록 방지). 팝업=세션이라 창마다 초기화.
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -150,6 +151,8 @@ body.m-out .tip b { color: #FCA5A5; }
     var p = String(code == null ? '' : code).trim().split('|');
     return p[0] === 'L1' && (p[2] === 'AREA' || p[2] === 'ZONE' || p[2] === 'RACK');
   }
+  // canonical Pallet_ID — 앱 normalizePallet 과 동일 계약(trim). 세션 중복등록 판정 기준.
+  function normPallet(code) { return String(code == null ? '' : code).trim(); }
 
   // ── 결과 전달 ─────────────────────────────────────────
   function deliver() {
@@ -188,7 +191,11 @@ body.m-out .tip b { color: #FCA5A5; }
         + '<button class="go" id="b-done" type="button"' + (pallets.length ? '' : ' disabled') + '>완료'
         + (pallets.length ? (' (' + pallets.length + ')') : '') + '</button></div>';
     Array.prototype.forEach.call(p.querySelectorAll('.rm'), function (b) {
-      b.addEventListener('click', function () { pallets.splice(+b.getAttribute('data-i'), 1); render(); });
+      b.addEventListener('click', function () {
+        var removed = pallets.splice(+b.getAttribute('data-i'), 1)[0];
+        if (removed != null) delete scannedPalletIds[normPallet(removed)];   // 삭제 항목은 재스캔 가능하도록 세션 Set 에서 해제
+        render();
+      });
     });
     var c = $('b-cancel'); if (c) c.addEventListener('click', function () { try { window.close(); } catch (e) {} });
     var d = $('b-done'); if (d && pallets.length) d.addEventListener('click', function () { paused = true; stop(); deliver(); });
@@ -238,8 +245,12 @@ body.m-out .tip b { color: #FCA5A5; }
     }
     // pallet 연속 스캔 — 적치위치 QR 오스캔은 PALLET 로 넣지 않고 안내 후 계속 스캔(세션/카메라 유지).
     if (isLocationQR(code)) { flash(true); beep(false); setSub('적치위치 QR입니다 · PALLET QR을 스캔하세요'); return; }
-    if (pallets.indexOf(code) >= 0) { flash(); setSub('이미 스캔됨 · ' + code); return; }
-    pallets.push(code);
+    // 세션 내 동일 Pallet 중복등록 방지 — canonical id(정규화) 기준. 추가/count 증가 없이 계속 스캔.
+    var pid = normPallet(code);
+    if (!pid) return;
+    if (scannedPalletIds[pid]) { flash(); setSub('이미 스캔한 PALLET입니다 · ' + pid); return; }
+    scannedPalletIds[pid] = true;
+    pallets.push(pid);
     flash(); beep(true);
     setSub('구역 ' + zone + ' · ' + pallets.length + '개 스캔됨');
     render();
