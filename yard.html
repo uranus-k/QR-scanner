@@ -145,6 +145,12 @@ body.m-out .tip b { color: #FCA5A5; }
   function setTitle(t) { var e = $('title'); if (e && e.firstChild) e.firstChild.nodeValue = t; }
   function setSub(t) { var e = $('sub'); if (e) e.textContent = t; }
 
+  // 적치위치 QR(versioned L1 AREA/ZONE/RACK) 판정 — 앱 _locParse 와 동일 계약. 입고 PALLET 단계 오스캔 차단용.
+  function isLocationQR(code) {
+    var p = String(code == null ? '' : code).trim().split('|');
+    return p[0] === 'L1' && (p[2] === 'AREA' || p[2] === 'ZONE' || p[2] === 'RACK');
+  }
+
   // ── 결과 전달 ─────────────────────────────────────────
   function deliver() {
     var payload = { _yardScan: true, mode: MODE, tag: TAG, zone: zone, pallets: pallets.slice() };
@@ -230,7 +236,8 @@ body.m-out .tip b { color: #FCA5A5; }
       render();
       return;
     }
-    // pallet 연속 스캔
+    // pallet 연속 스캔 — 적치위치 QR 오스캔은 PALLET 로 넣지 않고 안내 후 계속 스캔(세션/카메라 유지).
+    if (isLocationQR(code)) { flash(true); beep(false); setSub('적치위치 QR입니다 · PALLET QR을 스캔하세요'); return; }
     if (pallets.indexOf(code) >= 0) { flash(); setSub('이미 스캔됨 · ' + code); return; }
     pallets.push(code);
     flash(); beep(true);
