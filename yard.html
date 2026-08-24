@@ -119,6 +119,7 @@ body.m-out .tip b { color: #FCA5A5; }
   var step = (MODE === 'in') ? 'zone' : 'single';
   var zone = '', pallets = [], lastCode = '', lastTime = 0, paused = false, qr = null, ac = null;
   var scannedPalletIds = {};   // 이번 입고 세션에서 이미 스캔한 canonical Pallet_ID (중복등록 방지). 팝업=세션이라 창마다 초기화.
+  var TRACE = qs.get('trace') === '1';   // ?trace=1 진단 모드: 모든 decode 를 'format | raw | normalized' 로 화면에 표시(정상 동작 무영향)
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -214,8 +215,18 @@ body.m-out .tip b { color: #FCA5A5; }
     var r = $('b-retry'); if (r) r.addEventListener('click', function () { $('panel').style.display = 'none'; start(); });
   }
 
+  // 진단(?trace=1): decode 별 symbology·raw·normalized 를 화면에 남긴다. QR/Barcode 구분 및 false read 판정용.
+  function _pushTrace(fmt, raw) {
+    var d = document.getElementById('trace');
+    if (!d) { d = document.createElement('div'); d.id = 'trace';
+      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;max-height:42vh;overflow:auto;background:rgba(0,0,0,.86);color:#25e06a;font:11px/1.5 monospace;padding:8px;z-index:99999;white-space:pre-wrap';
+      document.body.appendChild(d); }
+    d.textContent = ((fmt || '?') + ' | ' + raw + ' | ' + normPallet(raw)) + '\n' + d.textContent;
+  }
   // ── 디코드 ────────────────────────────────────────────
-  function onDecode(text) {
+  //  html5-qrcode 콜백 = (decodedText, decodedResult). QR·1D 바코드 모두 지원(포맷 제한 없음).
+  function onDecode(text, result) {
+    if (TRACE) { var _fmt = ''; try { _fmt = (result && result.result && result.result.format && (result.result.format.formatName || result.result.format)) || ''; } catch (e) {} _pushTrace(_fmt, String(text || '')); }
     if (paused) return;
     var code = String(text || '').trim();
     if (!code) return;
