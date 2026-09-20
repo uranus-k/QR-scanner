@@ -349,7 +349,7 @@ body.m-out .tip b { color: #FCA5A5; }
   try {
     var _diagMk = document.createElement('div');
     _diagMk.style.cssText = 'position:fixed;top:6px;right:6px;z-index:100000;background:rgba(0,0,0,.72);color:#25e06a;font:11px/1.35 monospace;padding:4px 7px;border-radius:6px;pointer-events:none;max-width:64vw;word-break:break-all';
-    _diagMk.textContent = 'SCANDIAG-0920 · mode=' + (qs.get('mode') || '(none)') + ' · v=' + (qs.get('v') || '(none)');
+    _diagMk.textContent = 'SCANDIAG-0921 · mode=' + (qs.get('mode') || '(none)') + ' · tag=' + (qs.get('tag') || '(none)') + ' · v=' + (qs.get('v') || '(none)');
     document.body.appendChild(_diagMk);
   } catch (e) {}
   $('btn-x').addEventListener('click', function () { stop(); try { window.close(); } catch (e) {} });
