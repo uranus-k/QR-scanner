@@ -345,13 +345,6 @@ body.m-out .tip b { color: #FCA5A5; }
   setSub(PROMPT || (MODE === 'in' ? '구역 QR을 먼저 스캔하세요'
     : (MODE === 'seq' ? '불출 PALLET QR을 스캔하세요'
     : (MODE === 'one' ? 'Pallet QR을 스캔하세요' : '불출할 자재 QR을 스캔하세요'))));
-  // 진단용 런타임 identity 마커(우상단) — 기능 무영향. 실기기에서 실제 로드된 yard.html/전달된 query 확인용.
-  try {
-    var _diagMk = document.createElement('div');
-    _diagMk.style.cssText = 'position:fixed;top:6px;right:6px;z-index:100000;background:rgba(0,0,0,.72);color:#25e06a;font:11px/1.35 monospace;padding:4px 7px;border-radius:6px;pointer-events:none;max-width:64vw;word-break:break-all';
-    _diagMk.textContent = 'SCANDIAG-0921 · mode=' + (qs.get('mode') || '(none)') + ' · tag=' + (qs.get('tag') || '(none)') + ' · v=' + (qs.get('v') || '(none)');
-    document.body.appendChild(_diagMk);
-  } catch (e) {}
   $('btn-x').addEventListener('click', function () { stop(); try { window.close(); } catch (e) {} });
   start();
 })();
