@@ -111,8 +111,10 @@ body.m-out .tip b { color: #FCA5A5; }
   var qs = new URLSearchParams(location.search);
   //  in  = 구역 1회 + 자재 연속 / out = 불출 자재 1회 / one = 값 1개만 집어오기(중립)
   var M = qs.get('mode');
-  var MODE = (M === 'out' || M === 'one') ? M : 'in';
+  var MODE = (M === 'out' || M === 'one' || M === 'seq') ? M : 'in';   // seq = 앱 주도 다단계(불출 PALLET→적치장) 단일 세션
   var TAG = qs.get('tag') || '';                     // 호출측 라우팅용 — 그대로 돌려줌
+  var PROMPT = qs.get('prompt') || '';               // 카메라 상단 안내문구(현재 스캔 단계) — 앱이 단계별로 전달
+  var seqStep = 'pallet';                            // seq 모드 현재 하위 단계(pallet→location) — opener 명령으로 전환
   var RETURN_URL = qs.get('returnUrl') || '';
   var ZONES = (qs.get('zones') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
@@ -239,6 +241,14 @@ body.m-out .tip b { color: #FCA5A5; }
     if (code === lastCode && (now - lastTime) < 1500) return;
     lastCode = code; lastTime = now;
 
+    if (MODE === 'seq') {
+      // 앱 주도 다단계: 디코드 1건을 opener 로 보내고 일시정지 → opener 가 검증 후 next/retry/done 명령을 돌려준다.
+      // 카메라는 계속 켜둔 채(paused 로 gating) 동일 세션에서 다음 QR을 이어 스캔한다.
+      paused = true; flash(); beep(true);
+      setSub('확인 중…');
+      try { if (window.opener && !window.opener.closed) window.opener.postMessage({ _yardSeq: true, tag: TAG, step: seqStep, code: code }, '*'); } catch (e) {}
+      return;
+    }
     if (MODE === 'out' || MODE === 'one') {
       if (_isBarcode) { flash(true); beep(false); setSub('자재 QR을 스캔하세요'); return; }   // 1D 바코드 오인식 차단(계속 스캔)
       paused = true; flash(); beep(true);
@@ -319,11 +329,22 @@ body.m-out .tip b { color: #FCA5A5; }
     try { q.stop().then(function () { try { q.clear(); } catch (e) {} }).catch(function () {}); } catch (e) {}
   }
 
+  // seq(앱 주도 다단계): opener 명령 수신 — next(다음 단계로)·retry(같은 단계 재스캔)·done(완료·닫기)
+  if (MODE === 'seq') {
+    window.addEventListener('message', function (e) {
+      var d = e && e.data; if (!d || d.__yardCmd !== true) return;
+      if (d.cmd === 'done') { paused = true; stop(); try { window.close(); } catch (err) {} return; }
+      if (d.cmd === 'next') { seqStep = d.step || seqStep; setSub(d.prompt || 'QR을 스캔하세요'); lastCode = ''; lastTime = 0; paused = false; return; }
+      if (d.cmd === 'retry') { setSub(d.prompt || '다시 스캔하세요'); flash(true); lastCode = ''; lastTime = 0; paused = false; return; }
+    });
+  }
+
   // ── 부트 ──────────────────────────────────────────────
   document.body.classList.toggle('m-out', MODE === 'out');
-  setTitle(MODE === 'in' ? '입고 스캔' : (MODE === 'one' ? 'Pallet QR 스캔' : '불출 스캔'));
-  setSub(MODE === 'in' ? '구역 QR을 먼저 스캔하세요'
-    : (MODE === 'one' ? 'Pallet QR을 스캔하세요' : '불출할 자재 QR을 스캔하세요'));
+  setTitle(MODE === 'in' ? '입고 스캔' : (MODE === 'seq' ? 'PALLET 전환 스캔' : (MODE === 'one' ? 'Pallet QR 스캔' : '불출 스캔')));
+  setSub(PROMPT || (MODE === 'in' ? '구역 QR을 먼저 스캔하세요'
+    : (MODE === 'seq' ? '불출 PALLET QR을 스캔하세요'
+    : (MODE === 'one' ? 'Pallet QR을 스캔하세요' : '불출할 자재 QR을 스캔하세요'))));
   $('btn-x').addEventListener('click', function () { stop(); try { window.close(); } catch (e) {} });
   start();
 })();
