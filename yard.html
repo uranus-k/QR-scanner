@@ -117,9 +117,10 @@ body.m-out .tip b { color: #FCA5A5; }
   var seqStep = 'pallet';                            // seq 모드 현재 하위 단계(pallet→location) — opener 명령으로 전환
   var RETURN_URL = qs.get('returnUrl') || '';
   var ZONES = (qs.get('zones') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  var LOCGATE = qs.get('locgate') === '1';
 
   var step = (MODE === 'in') ? 'zone' : 'single';
-  var zone = '', pallets = [], lastCode = '', lastTime = 0, paused = false, qr = null, ac = null;
+  var zone = '', pallets = [], lastCode = '', lastTime = 0, paused = false, qr = null, ac = null, pendingZone = '';
   var scannedPalletIds = {};   // 이번 입고 세션에서 이미 스캔한 canonical Pallet_ID (중복등록 방지). 팝업=세션이라 창마다 초기화.
   var TRACE = qs.get('trace') === '1';   // ?trace=1 진단 모드: 모든 decode 를 'format | raw | normalized' 로 화면에 표시(정상 동작 무영향)
 
@@ -201,7 +202,7 @@ body.m-out .tip b { color: #FCA5A5; }
       });
     });
     var c = $('b-cancel'); if (c) c.addEventListener('click', function () { try { window.close(); } catch (e) {} });
-    var d = $('b-done'); if (d && pallets.length) d.addEventListener('click', function () { paused = true; stop(); deliver(); });
+    var d = $('b-done'); if (d && pallets.length) d.addEventListener('click', function () { paused = true; stop().then(deliver); });
   }
 
   function permError(msg) {
@@ -254,20 +255,34 @@ body.m-out .tip b { color: #FCA5A5; }
       paused = true; flash(); beep(true);
       pallets = [code];
       setSub('스캔 완료 · ' + code);
-      stop(); deliver();
+      stop().then(deliver);
       return;
     }
     if (step === 'zone') {
-      // zones 화이트리스트가 있으면 즉시 검증 (없으면 그대로 수용 → 앱에서 검증)
-      if (ZONES.length) {
+      // locgate=1 에서는 앱의 authoritative 위치 resolver 확인 전 zone/step을 변경하지 않는다.
+      if (!LOCGATE) {
+        if (ZONES.length) {
+          var legacyHit = ZONES.find(function (z) { return z === code || z.toLowerCase() === code.toLowerCase(); });
+          if (!legacyHit) { flash(true); beep(false); setSub('❌ 등록되지 않은 구역: ' + code); return; }
+          code = legacyHit;
+        }
+        zone = code; step = 'pallet';
+        flash(); beep(true);
+        setSub('구역 ' + zone + ' · 자재 QR을 연속 스캔하세요');
+        render();
+      } else if (window.opener && !window.opener.closed) {
+        pendingZone = code; paused = true;
+        try { window.opener.postMessage({ _yardZoneCandidate: true, tag: TAG, code: code }, '*'); }
+        catch (e) { pendingZone = ''; paused = false; flash(true); beep(false); setSub('적치장 QR을 먼저 스캔하세요'); }
+        setTimeout(function () {
+          if (pendingZone !== code || step !== 'zone') return;
+          pendingZone = ''; paused = false; setSub('적치장 QR을 먼저 스캔하세요');
+        }, 2000);
+      } else {
         var hit = ZONES.find(function (z) { return z === code || z.toLowerCase() === code.toLowerCase(); });
-        if (!hit) { flash(true); beep(false); setSub('❌ 등록되지 않은 구역: ' + code); return; }
-        code = hit;
+        if (hit) { zone = hit; step = 'pallet'; flash(); beep(true); setSub('구역 ' + zone + ' · 자재 QR을 연속 스캔하세요'); render(); }
+        else { flash(true); beep(false); setSub('적치장 QR을 먼저 스캔하세요'); }
       }
-      zone = code; step = 'pallet';
-      flash(); beep(true);
-      setSub('구역 ' + zone + ' · 자재 QR을 연속 스캔하세요');
-      render();
       return;
     }
     // pallet 연속 스캔 — 1D 바코드(CODE_39 등) false decode 는 PALLET 로 넣지 않고 계속 스캔(카메라/세션 유지).
@@ -325,15 +340,37 @@ body.m-out .tip b { color: #FCA5A5; }
   }
   function stop() {
     var q = qr; qr = null;
-    if (!q) return;
-    try { q.stop().then(function () { try { q.clear(); } catch (e) {} }).catch(function () {}); } catch (e) {}
+    if (!q) return Promise.resolve();
+    var videos = Array.prototype.slice.call(document.querySelectorAll('#reader video'));
+    var streams = videos.map(function (video) { return video.srcObject; }).filter(Boolean);
+    return Promise.resolve().then(function () { return q.stop(); }).catch(function () {}).then(function () {
+      streams.forEach(function (stream) {
+        try { stream.getTracks().forEach(function (track) { track.stop(); }); } catch (e) {}
+      });
+      videos.forEach(function (video) { video.srcObject = null; });
+      try { return Promise.resolve(q.clear()).catch(function () {}); } catch (e) {}
+    });
+  }
+
+  if (MODE === 'in' && LOCGATE) {
+    window.addEventListener('message', function (e) {
+      var d = e && e.data;
+      if (!d || d._yardZoneValidation !== true || e.source !== window.opener
+        || d.tag !== TAG || !pendingZone || d.code !== pendingZone || step !== 'zone') return;
+      pendingZone = ''; paused = false;
+      if (!d.accepted) { flash(true); beep(false); setSub('적치장 QR을 먼저 스캔하세요'); return; }
+      zone = d.code; step = 'pallet';
+      flash(); beep(true);
+      setSub('구역 ' + zone + ' · 자재 QR을 연속 스캔하세요');
+      render();
+    });
   }
 
   // seq(앱 주도 다단계): opener 명령 수신 — next(다음 단계로)·retry(같은 단계 재스캔)·done(완료·닫기)
   if (MODE === 'seq') {
     window.addEventListener('message', function (e) {
       var d = e && e.data; if (!d || d.__yardCmd !== true) return;
-      if (d.cmd === 'done') { paused = true; stop(); try { window.close(); } catch (err) {} return; }
+      if (d.cmd === 'done') { paused = true; stop().then(function () { try { window.close(); } catch (err) {} }); return; }
       if (d.cmd === 'next') { seqStep = d.step || seqStep; setSub(d.prompt || 'QR을 스캔하세요'); lastCode = ''; lastTime = 0; paused = false; return; }
       if (d.cmd === 'retry') { setSub(d.prompt || '다시 스캔하세요'); flash(true); lastCode = ''; lastTime = 0; paused = false; return; }
     });
@@ -345,7 +382,7 @@ body.m-out .tip b { color: #FCA5A5; }
   setSub(PROMPT || (MODE === 'in' ? '구역 QR을 먼저 스캔하세요'
     : (MODE === 'seq' ? '불출 PALLET QR을 스캔하세요'
     : (MODE === 'one' ? 'Pallet QR을 스캔하세요' : '불출할 자재 QR을 스캔하세요'))));
-  $('btn-x').addEventListener('click', function () { stop(); try { window.close(); } catch (e) {} });
+  $('btn-x').addEventListener('click', function () { stop().then(function () { try { window.close(); } catch (e) {} }); });
   start();
 })();
 </script>
