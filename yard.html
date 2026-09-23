@@ -85,6 +85,16 @@ body.m-out .tip b { color: #FCA5A5; }
 .perm h3 { font-size: 17px; font-weight: 800; margin-bottom: 8px; }
 .perm p { font-size: 13.5px; color: var(--text-2); line-height: 1.65; margin-bottom: 16px; }
 .perm .err { color: #FCA5A5; }
+.photo-strip { display: flex; gap: 8px; overflow-x: auto; min-height: 58px; }
+.photo-strip img { width: 72px; height: 54px; border-radius: 9px; object-fit: cover; border: 1px solid var(--line); }
+.photo-empty { color: var(--text-2); font-size: 13px; padding: 18px 2px; }
+.photo-actions { display: grid; grid-template-columns: 1fr 1.6fr 1fr; gap: 8px; }
+.photo-actions button { min-height: 50px; border-radius: var(--r-md); font-size: 14px; font-weight: 800; }
+.photo-actions .cancel, .photo-actions .remove { background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); }
+.photo-actions .shot { background: #fff; color: #0B1120; }
+.photo-done { width: 100%; min-height: 48px; border-radius: var(--r-md); background: var(--ok); color: #06240f; font-weight: 800; }
+.photo-done[disabled], .photo-actions .remove[disabled] { opacity: .42; }
+body.photo-mode .guide, body.photo-mode .tip { display: none; }
 </style>
 </head>
 <body>
@@ -118,9 +128,10 @@ body.m-out .tip b { color: #FCA5A5; }
   var RETURN_URL = qs.get('returnUrl') || '';
   var ZONES = (qs.get('zones') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
   var LOCGATE = qs.get('locgate') === '1';
+  var PHOTO_MODE = qs.get('photo') === '1' && (MODE === 'out' || MODE === 'one');
 
   var step = (MODE === 'in') ? 'zone' : 'single';
-  var zone = '', pallets = [], lastCode = '', lastTime = 0, paused = false, qr = null, ac = null, pendingZone = '';
+  var zone = '', pallets = [], photos = [], photoVideo = null, lastCode = '', lastTime = 0, paused = false, qr = null, ac = null, pendingZone = '';
   var scannedPalletIds = {};   // 이번 입고 세션에서 이미 스캔한 canonical Pallet_ID (중복등록 방지). 팝업=세션이라 창마다 초기화.
   var TRACE = qs.get('trace') === '1';   // ?trace=1 진단 모드: 모든 decode 를 'format | raw | normalized' 로 화면에 표시(정상 동작 무영향)
 
@@ -176,6 +187,73 @@ body.m-out .tip b { color: #FCA5A5; }
       return;
     }
     setSub('결과를 전달할 창을 찾지 못했습니다');
+  }
+
+  function postPhotos() {
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ _fieldPhotoCapture: true, photos: photos.slice() }, '*');
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function renderPhotoMode() {
+    var p = $('panel'); if (!p) return;
+    p.style.display = 'flex';
+    p.innerHTML = '<div class="ph"><div class="z">📷 현물사진 <small>후면카메라 유지</small></div>'
+      + '<div class="cnt">' + photos.length + '장</div></div>'
+      + (photos.length ? '<div class="photo-strip">' + photos.map(function (src) {
+          return '<img src="' + esc(src) + '" alt="촬영 사진">';
+        }).join('') + '</div>' : '<div class="photo-empty">촬영 버튼을 눌러 현물사진을 추가하세요</div>')
+      + '<div class="photo-actions"><button class="cancel" id="photo-cancel" type="button">취소</button>'
+      + '<button class="shot" id="photo-shot" type="button">촬영</button>'
+      + '<button class="remove" id="photo-remove" type="button"' + (photos.length ? '' : ' disabled') + '>마지막 삭제</button></div>'
+      + '<button class="photo-done" id="photo-done" type="button"' + (photos.length ? '' : ' disabled') + '>완료'
+      + (photos.length ? ' (' + photos.length + ')' : '') + '</button>';
+    var shot = $('photo-shot'); if (shot) shot.addEventListener('click', capturePhotoFrame);
+    var remove = $('photo-remove'); if (remove && photos.length) remove.addEventListener('click', function () { photos.pop(); renderPhotoMode(); });
+    var cancel = $('photo-cancel'); if (cancel) cancel.addEventListener('click', function () {
+      paused = true; stop().then(deliver);
+    });
+    var done = $('photo-done'); if (done && photos.length) done.addEventListener('click', function () {
+      done.disabled = true;
+      postPhotos();
+      paused = true;
+      stop().then(deliver);
+    });
+  }
+
+  function capturePhotoFrame() {
+    var video = photoVideo;
+    if (!video || !video.videoWidth || !video.videoHeight) { setSub('카메라 화면을 준비하지 못했습니다'); return; }
+    try {
+      var scale = Math.min(1, 1000 / Math.max(video.videoWidth, video.videoHeight));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+      canvas.getContext('2d', { alpha: false }).drawImage(video, 0, 0, canvas.width, canvas.height);
+      photos.push(canvas.toDataURL('image/jpeg', 0.68));
+      flash(); beep(true); setSub('현물사진 ' + photos.length + '장 촬영됨');
+      renderPhotoMode();
+    } catch (e) { setSub('사진을 촬영하지 못했습니다'); }
+  }
+
+  function enterPhotoMode() {
+    var q = qr;
+    var video = document.querySelector('#reader video');
+    var stream = video && video.srcObject;
+    var tracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];
+    if (!q || typeof q.pause !== 'function' || !video || !stream || !tracks.length
+      || !tracks.some(function (track) { return track.readyState === 'live'; })) return false;
+    try { q.pause(false); } catch (e) { return false; }
+    photoVideo = video;
+    document.body.classList.add('photo-mode');
+    setTitle('현물사진 촬영');
+    setSub('같은 후면카메라로 연속 촬영하세요');
+    renderPhotoMode();
+    return true;
   }
 
   // ── 패널 렌더 ─────────────────────────────────────────
@@ -255,6 +333,7 @@ body.m-out .tip b { color: #FCA5A5; }
       paused = true; flash(); beep(true);
       pallets = [code];
       setSub('스캔 완료 · ' + code);
+      if (PHOTO_MODE && enterPhotoMode()) return;
       stop().then(deliver);
       return;
     }
